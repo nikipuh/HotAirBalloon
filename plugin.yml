@@ -2,4 +2,15 @@ name: HotAirBalloon
 author: solo
 version: 0.0.3
 main: solo\hotairballoon\HotAirBalloon
-api: [3.0.0, 3.1.0, 3.2.0, 3.3.0, 4.0.0]
+api: [5.0.0]
+
+commands:
+  vehicle:
+    description: "HotAirBalloon vehicle commands"
+    usage: "/vehicle <registerskin|create>"
+    permission: hotairballoon.command
+
+permissions:
+  hotairballoon.command:
+    description: "Allows using the vehicle command"
+    default: op
