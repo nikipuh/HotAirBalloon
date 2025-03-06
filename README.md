@@ -18,6 +18,8 @@ On mobile phone, *long press*<br>
 <br>
 
 # Key manual
+!! The movement is working but not perfect. Will fix if i find the time in the future.
+!! Buttons dont really work, its kinda wobbly...
 **`↑`** Go straight and rise to the air<br>
 **`→`** Turns vehicle yaw right<br>
 **`←`** Turns vehicle yaw left<br>
