@@ -1,6 +1,6 @@
 name: HotAirBalloon
 author: solo
-version: 0.0.3
+version: 0.0.4
 main: solo\hotairballoon\HotAirBalloon
 api: [5.0.0]
 
