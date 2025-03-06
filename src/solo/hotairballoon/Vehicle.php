@@ -4,174 +4,143 @@ declare(strict_types=1);
 
 namespace solo\hotairballoon;
 
-use pocketmine\Player;
 use pocketmine\entity\Entity;
-use pocketmine\entity\EntityIds;
+use pocketmine\entity\EntitySizeInfo;
+use pocketmine\entity\Human;
+use pocketmine\entity\Location;
 use pocketmine\entity\Skin;
-use pocketmine\event\entity\EntityDamageByEntityEvent;
-use pocketmine\event\entity\EntityDamageEvent;
-use pocketmine\item\Item;
-use pocketmine\level\Level;
 use pocketmine\math\Vector3;
 use pocketmine\nbt\tag\CompoundTag;
-use pocketmine\network\mcpe\protocol\AddPlayerPacket;
-use pocketmine\network\mcpe\protocol\PlayerListPacket;
-use pocketmine\network\mcpe\protocol\SetEntityLinkPacket;
-use pocketmine\network\mcpe\protocol\types\EntityLink;
-use pocketmine\network\mcpe\protocol\types\PlayerListEntry;
-use pocketmine\utils\UUID;
+use pocketmine\network\mcpe\protocol\SetActorLinkPacket;
+use pocketmine\network\mcpe\protocol\types\entity\EntityLink;
+use pocketmine\network\mcpe\protocol\types\entity\EntityMetadataCollection;
+use pocketmine\network\mcpe\protocol\types\entity\EntityMetadataFlags;
+use pocketmine\network\mcpe\protocol\types\entity\EntityMetadataProperties;
+use pocketmine\player\Player;
+use pocketmine\utils\TextFormat;
 
-abstract class Vehicle extends \pocketmine\entity\Vehicle{
+abstract class Vehicle extends Human {
 
-	public const NETWORK_ID = EntityIds::PLAYER;
+    public static array $ridingEntities = [];
 
-	public static $ridingEntities = [];
+    protected ?Player $rider = null;
+    protected float $riderOffset = -0.8;
+    protected float $gravity = 0.08;
+    protected float $drag = 0.02;
+    protected float $baseOffset = 1.62;
 
-	protected $uuid;
-	protected $rider = null;
-	protected $riderOffset = -8;
+    public function __construct(Location $location, ?Skin $skin = null, ?CompoundTag $nbt = null) {
+        if ($skin === null) {
+            $skin = $this->getSkin();
+        }
+        parent::__construct($location, $skin, $nbt);
+    }
 
-	protected $gravity = 0.08;
-	protected $drag = 0.02;
+    protected function getInitialSizeInfo(): EntitySizeInfo {
+        return new EntitySizeInfo(1.8, 0.6);
+    }
 
-	protected $baseOffset = 1.62;
+    public function getName(): string {
+        return $this->getNameTag();
+    }
 
-	public function __construct(Level $level, CompoundTag $nbt){
-		parent::__construct($level, $nbt);
-	}
+    public function getRider(): ?Player {
+        return $this->rider;
+    }
 
-	protected function initEntity(CompoundTag $nbt) : void{
-		parent::initEntity($nbt);
+    public function isRiding(): bool {
+        return $this->rider instanceof Player;
+    }
 
-		$this->uuid = UUID::fromRandom();
+    public function ride(Player $player): bool {
+        if (isset(self::$ridingEntities[$player->getName()])) {
+            $player->sendPopup(TextFormat::RED . "You are already riding");
+            return false;
+        }
+        
+        if ($this->rider instanceof Player) {
+            $player->sendPopup(TextFormat::RED . "Someone is already riding");
+            return false;
+        }
+        
+        $this->rider = $player;
+        self::$ridingEntities[$player->getName()] = $this;
 
-		// Not working since Minecraft hardcorded this
-		$this->propertyManager->setString(Entity::DATA_INTERACTIVE_TAG, "Ride");
-	}
+        $this->getNetworkProperties()->setGenericFlag(EntityMetadataFlags::SADDLED, true);
+        $player->getNetworkProperties()->setGenericFlag(EntityMetadataFlags::RIDING, true);
+        $player->getNetworkProperties()->setGenericFlag(EntityMetadataFlags::WASD_CONTROLLED, true);
+        
+        foreach ($this->getViewers() as $viewer) {
+            $this->sendLink($viewer);
+        }
+        
+        $player->sendPopup(TextFormat::AQUA . "Press jump or sneak to throw off");
+        return true;
+    }
 
-	public function getName() : string{
-		return $this->getNameTag();
-	}
+    public function input(float $motionX, float $motionY): void {
+    }
 
-	public function getUniqueId() : ?UUID{
-		return $this->uuid;
-	}
+    public function dismount(bool $immediate = false): void {
+        if (!$this->rider instanceof Player) return;
 
-	abstract public function getSkin() : Skin;
+        $this->getNetworkProperties()->setGenericFlag(EntityMetadataFlags::SADDLED, false);
+        $this->rider->getNetworkProperties()->setGenericFlag(EntityMetadataFlags::RIDING, false);
+        $this->rider->getNetworkProperties()->setGenericFlag(EntityMetadataFlags::WASD_CONTROLLED, false);
+        
+        foreach ($this->getViewers() as $viewer) {
+            $this->sendLink($viewer, EntityLink::TYPE_REMOVE, $immediate);
+        }
 
-	public function getRider() : ?Player{
-		return $this->rider;
-	}
+        unset(self::$ridingEntities[$this->rider->getName()]);
+        $this->rider = null;
+    }
 
-	public function isRiding(){
-		return $this->rider instanceof Player;
-	}
+    public function flagForDespawn(): void {
+        $this->dismount(true);
+        parent::flagForDespawn();
+    }
 
-	public function ride(Player $player){
-		if(isset(self::$ridingEntities[$player->getName()])){
-			return $player->sendPopup("§cYou are now riding");
-		}
-		if($this->rider instanceof Player){
-			return $player->sendPopup("§cSomeone is already riding");
-		}
-		$this->rider = $player;
-		self::$ridingEntities[$player->getName()] = $this;
+    public function getRiderSeatPosition(int $seatNumber = 0): Vector3 {
+        return new Vector3(0, $this->size->getHeight() * 0.75 + $this->riderOffset, 0);
+    }
 
-		$player->setGenericFlag(Entity::DATA_FLAG_WASD_CONTROLLED, true);
-		$player->setGenericFlag(Entity::DATA_FLAG_RIDING, true);
-		$this->setGenericFlag(Entity::DATA_FLAG_SADDLED, true);
+    public function sendLink(Player $player, int $type = EntityLink::TYPE_RIDER, bool $immediate = false): void {
+        if (!$this->rider instanceof Player) return;
 
-		// not working AFAIK
-		$this->propertyManager->setVector3(Entity::DATA_RIDER_SEAT_POSITION, $this->getRiderSeatPosition());
-		$this->propertyManager->setByte(Entity::DATA_CONTROLLING_RIDER_SEAT_NUMBER, 0);
+        if (!$player->canSee($this->rider)) {
+            $this->rider->despawnFrom($player);
+            $this->rider->spawnTo($player);
+        }
 
-		foreach($this->getViewers() as $viewer){
-			$this->sendLink($viewer);
-		}
-		$this->rider->sendPopup("§bPress jump or sneak to throw off");
-	}
+        $from = $this->getId();
+        $to = $this->rider->getId();
 
-	public function input(float $motionX, float $motionY){
-		// motionX LEFT = 1, RIGHT = -1
-		// motionY UP = 1, DOWN = -1
-		//
-		// * NOTE
-		// when player press a couple of KEY at the same time,
-		// motionX and motionY will have a slightly lower value,
-		// 0.7 (not exact value, similar to this)
+        $pk = new SetActorLinkPacket();
+        $pk->link = new EntityLink($from, $to, $type, $immediate, true, 0.0);
+        $player->getNetworkSession()->sendDataPacket($pk);
+    }
 
-		// you can implement player input override this method
-	}
+    protected function syncNetworkData(EntityMetadataCollection $properties): void {
+        parent::syncNetworkData($properties);
+        
+        $properties->setString(
+            EntityMetadataProperties::INTERACTIVE_TAG,
+            "Ride"
+        );
+        
+        $properties->setVector3(
+            EntityMetadataProperties::RIDER_SEAT_POSITION,
+            $this->getRiderSeatPosition()
+        );
+        
+        $properties->setFloat(
+            EntityMetadataProperties::CONTROLLING_RIDER_SEAT_NUMBER,
+            0
+        );
+    }
 
-	public function dismount(bool $immediate = false){
-		if(!$this->rider instanceof Player) return;
-
-		$this->rider->setGenericFlag(Entity::DATA_FLAG_WASD_CONTROLLED, false);
-		$this->rider->setGenericFlag(Entity::DATA_FLAG_RIDING, false);
-		$this->setGenericFlag(Entity::DATA_FLAG_SADDLED, false);
-
-		foreach($this->getViewers() as $viewer){
-			$this->sendLink($viewer, EntityLink::TYPE_REMOVE, $immediate);
-		}
-
-		unset(self::$ridingEntities[$this->rider->getName()]);
-		$this->rider = null;
-	}
-
-	public function kill() : void{
-		$this->dismount(true);
-		parent::kill();
-	}
-
-	public function getRiderSeatPosition(int $seatNumber = 0){
-		return new Vector3(0, $this->height * 0.75 + $this->riderOffset, 0);
-	}
-
-	public function sendLink(Player $player, int $type = EntityLink::TYPE_RIDER, bool $immediate = false) : void{
-		if(!$this->rider instanceof Player) return;
-
-		if(!isset($player->getViewers()[$this->rider->getLoaderId()])){
-			// force spawn for link
-			$this->rider->spawnTo($player);
-		}
-
-		$from = $this->getId();
-		$to = $this->rider->getId();
-
-		$pk = new SetEntityLinkPacket();
-		$pk->link = new EntityLink($from, $to, $type, $immediate);
-		$player->sendDataPacket($pk);
-	}
-
-	protected function sendSpawnPacket(Player $player) : void{
-		$skin = $this->getSkin();
-		if(!$skin->isValid()){
-			throw new \InvalidStateException((new \ReflectionClass($this))->getShortName() . " must have a valid skin set");
-		}
-
-		$pk = new PlayerListPacket();
-		$pk->type = PlayerListPacket::TYPE_ADD;
-		$pk->entries = [PlayerListEntry::createAdditionEntry($this->uuid, $this->id, $this->getName(), $this->getName(), 0, $this->getSkin())];
-		$player->sendDataPacket($pk);
-
-		$pk = new AddPlayerPacket();
-		$pk->uuid = $this->getUniqueId();
-		$pk->username = $this->getName();
-		$pk->entityRuntimeId = $this->getId();
-		$pk->position = $this->asVector3();
-		$pk->motion = $this->getMotion();
-		$pk->yaw = $this->yaw;
-		$pk->pitch = $this->pitch;
-		$pk->item = Item::get(Item::AIR);
-		$pk->attributes = $this->attributeMap->getAll();
-		$pk->metadata = $this->propertyManager->getAll();
-		$player->sendDataPacket($pk);
-
-		$this->sendLink($player);
-
-		$pk = new PlayerListPacket();
-		$pk->type = PlayerListPacket::TYPE_REMOVE;
-		$pk->entries = [PlayerListEntry::createRemovalEntry($this->uuid)];
-		$player->sendDataPacket($pk);
-	}
+    public function getOffsetPosition(Vector3 $vector): Vector3 {
+        return $vector->add(0, $this->baseOffset, 0);
+    }
 }
